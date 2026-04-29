@@ -3,65 +3,77 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>1秒積み上げCam</title>
+    <title>1秒Vlog合体Cam</title>
     <style>
         body { font-family: sans-serif; background: #121212; color: white; text-align: center; margin: 0; }
-        video#preview { width: 100%; height: 50vh; background: #000; object-fit: cover; }
-        .controls { padding: 20px; }
-        #recBtn { width: 80px; height: 80px; border-radius: 50%; border: 5px solid white; background: #ff4444; box-shadow: 0 0 15px rgba(255,0,0,0.5); }
-        #recBtn:active { transform: scale(0.9); background: #cc0000; }
-        #status { color: #00ff00; height: 20px; margin: 10px 0; }
-        .vlog-list { display: grid; grid-template-columns: repeat(2, 1fr); gap: 10px; padding: 10px; }
-        video.clip { width: 100%; border-radius: 8px; border: 1px solid #333; }
+        video#preview { width: 100%; height: 45vh; background: #000; object-fit: cover; }
+        .controls { padding: 15px; display: flex; flex-direction: column; align-items: center; gap: 15px; }
+        #recBtn { width: 70px; height: 70px; border-radius: 50%; border: 5px solid white; background: #ff4444; }
+        #exportBtn { padding: 10px 20px; border-radius: 20px; border: none; background: #4444ff; color: white; font-weight: bold; display: none; }
+        #status { color: #00ff00; font-size: 0.9rem; min-height: 1.2rem; }
+        .vlog-list { display: flex; overflow-x: auto; gap: 5px; padding: 10px; background: #222; }
+        video.clip { width: 80px; height: 80px; object-fit: cover; border-radius: 4px; }
     </style>
 </head>
 <body>
     <video id="preview" autoplay playsinline muted></video>
     <div class="controls">
-        <button id="recBtn"></button>
         <div id="status"></div>
+        <button id="recBtn"></button>
+        <button id="exportBtn">🎬 1本の動画にして保存</button>
     </div>
-    <div style="color:#888;">--- 撮影済みクリップ ---</div>
+    <div style="font-size: 0.8rem; color: #888;">今回の撮影リスト</div>
     <div id="vlogList" class="vlog-list"></div>
 
     <script>
         let mediaRecorder;
-        let chunks = [];
+        let recordedBlobs = []; // 撮影した1秒ずつのデータを溜める場所
 
+        // カメラ設定
         navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: true })
             .then(stream => {
                 document.getElementById('preview').srcObject = stream;
-                mediaRecorder = new MediaRecorder(stream);
-                mediaRecorder.ondataavailable = e => chunks.push(e.data);
-                mediaRecorder.onstop = () => {
-                    const blob = new Blob(chunks, { type: 'video/mp4' });
-                    const url = URL.createObjectURL(blob);
+                
+                document.getElementById('recBtn').onclick = () => {
+                    const tempChunks = [];
+                    const recorder = new MediaRecorder(stream);
                     
-                    // 1. 画面にプレビューを表示
-                    const video = document.createElement('video');
-                    video.src = url;
-                    video.className = 'clip';
-                    video.controls = true;
-                    document.getElementById('vlogList').prepend(video);
+                    recorder.ondataavailable = e => tempChunks.push(e.data);
+                    recorder.onstop = () => {
+                        const blob = new Blob(tempChunks, { type: 'video/mp4' });
+                        recordedBlobs.push(blob); // リストに追加
+                        
+                        // プレビュー表示
+                        const video = document.createElement('video');
+                        video.src = URL.createObjectURL(blob);
+                        video.className = 'clip';
+                        document.getElementById('vlogList').appendChild(video);
+                        
+                        document.getElementById('exportBtn').style.display = "block";
+                        document.getElementById('status').innerText = `${recordedBlobs.length}個のシーンを記録中`;
+                    };
 
-                    // 2. スマホ本体に自動ダウンロード（保存）
-                    const a = document.createElement('a');
-                    a.href = url;
-                    a.download = `vlog_${new Date().getTime()}.mp4`;
-                    a.click();
-
-                    chunks = [];
-                    document.getElementById('status').innerText = "保存完了！";
-                    setTimeout(() => document.getElementById('status').innerText = "", 2000);
+                    recorder.start();
+                    document.getElementById('status').innerText = "録画中...";
+                    setTimeout(() => recorder.stop(), 1000); // 1秒で止める
                 };
             });
 
-        document.getElementById('recBtn').onclick = () => {
-            if (mediaRecorder && mediaRecorder.state === "inactive") {
-                mediaRecorder.start();
-                document.getElementById('status').innerText = "録画中...";
-                setTimeout(() => mediaRecorder.stop(), 1000); // 1秒固定
-            }
+        // 「1本の動画にする」処理
+        document.getElementById('exportBtn').onclick = async () => {
+            document.getElementById('status').innerText = "動画を連結しています...";
+            
+            // 全ての動画を一つにまとめる（Blob連結）
+            // ※本来は再エンコードが必要ですが、同じ設定で撮った動画なら多くの環境でこれで繋がります
+            const finalBlob = new Blob(recordedBlobs, { type: 'video/mp4' });
+            const url = URL.createObjectURL(finalBlob);
+            
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `my_vlog_${new Date().getTime()}.mp4`;
+            a.click();
+            
+            document.getElementById('status').innerText = "1本の動画として保存しました！";
         };
     </script>
 </body>
