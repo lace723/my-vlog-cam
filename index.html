@@ -3,17 +3,19 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>1秒Vlog継続Cam</title>
+    <title>1秒Vlog・完結編</title>
     <style>
         body { font-family: sans-serif; background: #121212; color: white; text-align: center; margin: 0; }
         video#preview { width: 100%; height: 40vh; background: #000; object-fit: cover; }
         .controls { padding: 15px; display: flex; flex-direction: column; align-items: center; gap: 10px; }
         #recBtn { width: 70px; height: 70px; border-radius: 50%; border: 5px solid white; background: #ff4444; }
         #exportBtn { padding: 12px 24px; border-radius: 25px; border: none; background: #4444ff; color: white; font-weight: bold; display: none; }
-        #clearBtn { margin-top: 10px; background: none; border: 1px solid #555; color: #888; font-size: 0.7rem; padding: 5px 10px; border-radius: 5px; }
-        #status { color: #00ff00; font-size: 0.9rem; min-height: 1.2rem; }
-        .vlog-list { display: flex; overflow-x: auto; gap: 5px; padding: 10px; background: #222; min-height: 80px; }
+        #clearBtn { background: none; border: 1px solid #555; color: #888; font-size: 0.7rem; padding: 5px 10px; border-radius: 5px; }
+        #status { color: #00ff00; font-size: 0.9rem; min-height: 1.2rem; margin: 10px; }
+        .vlog-list { display: flex; overflow-x: auto; gap: 5px; padding: 10px; background: #222; }
         video.clip { width: 80px; height: 80px; object-fit: cover; border-radius: 4px; }
+        /* 合体作業用の隠し要素 */
+        #hiddenCanvas { display: none; }
     </style>
 </head>
 <body>
@@ -21,26 +23,24 @@
     <div class="controls">
         <div id="status">準備中...</div>
         <button id="recBtn"></button>
-        <button id="exportBtn">🎬 合体して1本の動画にする</button>
-        <button id="clearBtn" onclick="clearData()">撮影リストを空にする</button>
+        <button id="exportBtn">🎬 1本の動画に合体して保存</button>
+        <button id="clearBtn" onclick="clearData()">撮影リストをリセット</button>
     </div>
-    <div style="font-size: 0.8rem; color: #888;">蓄積されたクリップ</div>
     <div id="vlogList" class="vlog-list"></div>
+    <canvas id="hiddenCanvas"></canvas>
 
     <script>
         let mediaRecorder;
         let db;
-        const DB_NAME = "VlogDB";
+        const DB_NAME = "VlogDB_v2";
         const STORE_NAME = "clips";
 
-        // 1. データベースの準備（スマホ内に保存場所を作る）
+        // DB準備
         const request = indexedDB.open(DB_NAME, 1);
-        request.onupgradeneeded = e => {
-            e.target.result.createObjectStore(STORE_NAME, { autoIncrement: true });
-        };
+        request.onupgradeneeded = e => e.target.result.createObjectStore(STORE_NAME, { autoIncrement: true });
         request.onsuccess = e => {
             db = e.target.result;
-            loadClips(); // 起動時に保存済みの動画を読み込む
+            loadClips();
             document.getElementById('status').innerText = "準備完了";
         };
 
@@ -48,72 +48,108 @@
         navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: true })
             .then(stream => {
                 document.getElementById('preview').srcObject = stream;
-                
                 document.getElementById('recBtn').onclick = () => {
-                    const tempChunks = [];
+                    const chunks = [];
                     const recorder = new MediaRecorder(stream);
-                    recorder.ondataavailable = e => tempChunks.push(e.data);
-                    recorder.onstop = () => {
-                        const blob = new Blob(tempChunks, { type: 'video/mp4' });
-                        saveToDB(blob); // 撮るたびにDBに保存
-                    };
+                    recorder.ondataavailable = e => chunks.push(e.data);
+                    recorder.onstop = () => saveToDB(new Blob(chunks, { type: 'video/mp4' }));
                     recorder.start();
-                    document.getElementById('status').innerText = "録画中...";
+                    document.getElementById('status').innerText = "1秒録画中...";
                     setTimeout(() => recorder.stop(), 1000);
                 };
             });
 
-        // データをスマホの保管庫（DB）に保存
         function saveToDB(blob) {
             const tx = db.transaction(STORE_NAME, "readwrite");
             tx.objectStore(STORE_NAME).add(blob);
             tx.oncomplete = () => loadClips();
         }
 
-        // 保存された動画を画面に並べる
         function loadClips() {
             const list = document.getElementById('vlogList');
             list.innerHTML = "";
             const tx = db.transaction(STORE_NAME, "readonly");
             const store = tx.objectStore(STORE_NAME);
-            const clips = [];
-
+            let count = 0;
             store.openCursor().onsuccess = e => {
                 const cursor = e.target.result;
                 if (cursor) {
-                    const blob = cursor.value;
-                    clips.push(blob);
+                    count++;
                     const video = document.createElement('video');
-                    video.src = URL.createObjectURL(blob);
+                    video.src = URL.createObjectURL(cursor.value);
                     video.className = 'clip';
                     list.appendChild(video);
                     cursor.continue();
-                } else {
-                    if (clips.length > 0) {
-                        document.getElementById('exportBtn').style.display = "block";
-                        document.getElementById('status').innerText = `${clips.length}個のシーンが保存されています`;
-                    }
+                } else if (count > 0) {
+                    document.getElementById('exportBtn').style.display = "block";
+                    document.getElementById('status').innerText = `${count}個のシーンを保存済み`;
                 }
             };
         }
 
-        // 連結して保存
-        document.getElementById('exportBtn').onclick = () => {
+        // ★最重要：動画の合体処理
+        document.getElementById('exportBtn').onclick = async () => {
+            const status = document.getElementById('status');
+            status.innerText = "動画を繋ぎ合わせています（数秒かかります）...";
+            
             const tx = db.transaction(STORE_NAME, "readonly");
-            const store = tx.objectStore(STORE_NAME);
-            const clips = [];
-            store.getAll().onsuccess = e => {
-                const finalBlob = new Blob(e.target.result, { type: 'video/mp4' });
+            const blobs = await new Promise(resolve => {
+                tx.objectStore(STORE_NAME).getAll().onsuccess = e => resolve(e.target.result);
+            });
+
+            const canvas = document.getElementById('hiddenCanvas');
+            const ctx = canvas.getContext('2d');
+            const hiddenVideo = document.createElement('video');
+            hiddenVideo.muted = true;
+
+            // 最初の動画からサイズを設定
+            const firstUrl = URL.createObjectURL(blobs[0]);
+            hiddenVideo.src = firstUrl;
+            await new Promise(r => hiddenVideo.onloadedmetadata = r);
+            canvas.width = hiddenVideo.videoWidth;
+            canvas.height = hiddenVideo.videoHeight;
+
+            // キャンバスの映像を録画する準備
+            const stream = canvas.captureStream(30);
+            const recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp9' });
+            const finalChunks = [];
+            recorder.ondataavailable = e => finalChunks.push(e.data);
+
+            recorder.start();
+
+            // 1つずつ順番に再生してキャンバスに描画
+            for (let blob of blobs) {
+                const url = URL.createObjectURL(blob);
+                hiddenVideo.src = url;
+                await new Promise(r => hiddenVideo.onloadeddata = r);
+                await hiddenVideo.play();
+                
+                await new Promise(resolve => {
+                    const draw = () => {
+                        ctx.drawImage(hiddenVideo, 0, 0, canvas.width, canvas.height);
+                        if (!hiddenVideo.paused && !hiddenVideo.ended) {
+                            requestAnimationFrame(draw);
+                        } else {
+                            resolve();
+                        }
+                    };
+                    draw();
+                });
+            }
+
+            recorder.stop();
+            recorder.onstop = () => {
+                const finalBlob = new Blob(finalChunks, { type: 'video/webm' });
                 const a = document.createElement('a');
                 a.href = URL.createObjectURL(finalBlob);
-                a.download = `my_vlog_complete.mp4`;
+                a.download = `vlog_total_${Date.now()}.webm`;
                 a.click();
+                status.innerText = "合体完了！保存しました。";
             };
         };
 
-        // リストを空にする
         function clearData() {
-            if(confirm("撮影リストをリセットしますか？")) {
+            if(confirm("リストを空にしますか？")) {
                 const tx = db.transaction(STORE_NAME, "readwrite");
                 tx.objectStore(STORE_NAME).clear();
                 tx.oncomplete = () => location.reload();
