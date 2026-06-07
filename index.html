@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>1秒Vlog・安全合体編</title>
+    <title>1秒Vlog・完全救出編</title>
     <style>
         body { font-family: sans-serif; background: #121212; color: white; text-align: center; margin: 0; }
         video#preview { width: 100%; height: 40vh; background: #000; object-fit: cover; }
@@ -31,7 +31,7 @@
     <script>
         let mediaRecorder;
         let db;
-        const DB_NAME = "VlogDB_v2"; // 前回のデータベースを引き継ぎます
+        const DB_NAME = "VlogDB_v2";
         const STORE_NAME = "clips";
 
         // DB準備
@@ -86,12 +86,11 @@
             };
         }
 
-        // ★改良：メモリを節約しながら順番に繋ぐ処理
+        // ★改良：壊れた動画があってもスキップして繋ぐ処理
         document.getElementById('exportBtn').onclick = async () => {
             const status = document.getElementById('status');
             status.innerText = "合体準備中...";
             
-            // 全てのデータを一気に読まず、キー（目次）だけをまず取得
             const tx = db.transaction(STORE_NAME, "readonly");
             const keys = await new Promise(resolve => {
                 tx.objectStore(STORE_NAME).getAllKeys().onsuccess = e => resolve(e.target.result);
@@ -105,14 +104,30 @@
             hiddenVideo.muted = true;
             hiddenVideo.playsInline = true;
 
-            // 最初の1本目だけ読み込んでサイズを決定
-            const firstBlob = await getBlobByKey(keys[0]);
-            const firstUrl = URL.createObjectURL(firstBlob);
-            hiddenVideo.src = firstUrl;
-            await new Promise(r => hiddenVideo.onloadedmetadata = r);
-            canvas.width = hiddenVideo.videoWidth;
-            canvas.height = hiddenVideo.videoHeight;
-            URL.revokeObjectURL(firstUrl); // すぐにメモリ解放
+            // 最初の正常に読める1本目を探してサイズを決定
+            let firstBlob = null;
+            for(let key of keys) {
+                try {
+                    firstBlob = await getBlobByKey(key);
+                    const firstUrl = URL.createObjectURL(firstBlob);
+                    hiddenVideo.src = firstUrl;
+                    await new Promise((res, rej) => {
+                        hiddenVideo.onloadedmetadata = res;
+                        hiddenVideo.onerror = rej;
+                    });
+                    canvas.width = hiddenVideo.videoWidth;
+                    canvas.height = hiddenVideo.videoHeight;
+                    URL.revokeObjectURL(firstUrl);
+                    break;
+                } catch(e) {
+                    firstBlob = null; // ダメなら次を探す
+                }
+            }
+
+            if (!firstBlob) {
+                status.innerText = "再生可能な動画が見つかりませんでした。";
+                return;
+            }
 
             // 録画ストリームの開始
             const stream = canvas.captureStream(30);
@@ -121,33 +136,46 @@
             recorder.ondataavailable = e => finalChunks.push(e.data);
             recorder.start();
 
-            // 1本ずつ、読み込み → 再生・録画 → メモリ解放 を繰り返す
             let currentIndex = 0;
+            let successCount = 0;
+
             for (let key of keys) {
                 currentIndex++;
                 status.innerText = `動画を結合中... (${currentIndex} / ${keys.length} シーン)`;
                 
-                const blob = await getBlobByKey(key);
-                const url = URL.createObjectURL(blob);
-                hiddenVideo.src = url;
+                try {
+                    const blob = await getBlobByKey(key);
+                    const url = URL.createObjectURL(blob);
+                    hiddenVideo.src = url;
+                    
+                    // タイムアウト付きの読み込み（3秒待ってもダメなら壊れていると判断して次へ）
+                    await new Promise((resolve, reject) => {
+                        const timeout = setTimeout(() => reject(new Error("Timeout")), 3000);
+                        hiddenVideo.onloadeddata = () => { clearTimeout(timeout); resolve(); };
+                        hiddenVideo.onerror = () => { clearTimeout(timeout); reject(new Error("Video Error")); };
+                    });
+
+                    await hiddenVideo.play();
+                    
+                    await new Promise(resolve => {
+                        const draw = () => {
+                            ctx.drawImage(hiddenVideo, 0, 0, canvas.width, canvas.height);
+                            if (!hiddenVideo.paused && !hiddenVideo.ended) {
+                                requestAnimationFrame(draw);
+                            } else {
+                                resolve();
+                            }
+                        };
+                        draw();
+                    });
+                    
+                    successCount++;
+                    URL.revokeObjectURL(url);
+                } catch (error) {
+                    console.log(`${currentIndex}個目の動画にエラーがあったためスキップしました。`);
+                    // エラーがあっても処理を止めずに次の動画へ行く
+                }
                 
-                await new Promise(r => hiddenVideo.onloadeddata = r);
-                await hiddenVideo.play();
-                
-                await new Promise(resolve => {
-                    const draw = () => {
-                        ctx.drawImage(hiddenVideo, 0, 0, canvas.width, canvas.height);
-                        if (!hiddenVideo.paused && !hiddenVideo.ended) {
-                            requestAnimationFrame(draw);
-                        } else {
-                            resolve();
-                        }
-                    };
-                    draw();
-                });
-                
-                // 【最重要】使い終わった動画のメモリをその場で完全にゴミ箱に捨てる
-                URL.revokeObjectURL(url);
                 hiddenVideo.src = "";
                 hiddenVideo.load();
             }
@@ -159,11 +187,10 @@
                 a.href = URL.createObjectURL(finalBlob);
                 a.download = `vlog_total_${Date.now()}.webm`;
                 a.click();
-                status.innerText = "合体完了！保存しました。";
+                status.innerText = `合体完了！(${successCount}個の正常なシーンを保存しました)`;
             };
         };
 
-        // キーを指定して1個だけ動画をデータベースから持ってくる関数
         function getBlobByKey(key) {
             return new Promise(resolve => {
                 const tx = db.transaction(STORE_NAME, "readonly");
