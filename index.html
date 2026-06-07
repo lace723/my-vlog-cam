@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>1秒Vlog・なめらか完成編</title>
+    <title>高画質Vlog・完成編</title>
     <style>
         body { font-family: sans-serif; background: #0a0a0a; color: white; text-align: center; margin: 0; }
         video#preview { width: 100%; height: 42vh; background: #000; object-fit: cover; }
@@ -21,14 +21,20 @@
     <video id="preview" autoplay playsinline muted></video>
     <div class="controls">
         <div id="status">準備中...</div>
-        <button id="recBtn" title="1秒録画"></button>
-        <button id="exportBtn">🎬 なめらかに合体して保存</button>
+        <button id="recBtn" title="録画開始"></button>
+        <button id="exportBtn">🎬 高画質で合体して保存</button>
         <button id="clearBtn" onclick="clearData()">撮影履歴をリセット</button>
     </div>
     <div id="vlogList" class="vlog-list"></div>
     <canvas id="hiddenCanvas"></canvas>
 
     <script>
+        // ==========================================
+        // ★ お好みの秒数にいつでも変更できます
+        // ==========================================
+        const RECORD_SECONDS = 1.5; // 1.5秒
+        // ==========================================
+
         let mediaRecorder;
         let db;
         const DB_NAME = "VlogDB_v2";
@@ -43,19 +49,40 @@
             document.getElementById('status').innerText = "カメラ準備完了";
         };
 
-        // カメラ起動
-        navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: true })
+        // ★改善：カメラの解像度を「フルHD（1920x1080）」に明示的に指定して起動
+        const cameraConstraints = {
+            video: {
+                facingMode: "environment",
+                width: { ideal: 1920 },
+                height: { ideal: 1080 }
+            },
+            audio: true
+        };
+
+        navigator.mediaDevices.getUserMedia(cameraConstraints)
             .then(stream => {
                 document.getElementById('preview').srcObject = stream;
                 document.getElementById('recBtn').onclick = () => {
                     const chunks = [];
-                    const recorder = new MediaRecorder(stream);
+                    
+                    // 録画の画質（ビットレート）も少し引き上げてクオリティを担保
+                    const recorder = new MediaRecorder(stream, {
+                        mimeType: 'video/mp4',
+                        videoBitsPerSecond: 5000000 // 5Mbps（綺麗かつ重すぎない絶妙なライン）
+                    });
+                    
                     recorder.ondataavailable = e => chunks.push(e.data);
                     recorder.onstop = () => saveToDB(new Blob(chunks, { type: 'video/mp4' }));
                     recorder.start();
-                    document.getElementById('status').innerText = "● 録画中...";
-                    setTimeout(() => recorder.stop(), 1000);
+                    document.getElementById('status').innerText = `● ${RECORD_SECONDS}秒録画中...`;
+                    
+                    setTimeout(() => recorder.stop(), RECORD_SECONDS * 1000);
                 };
+            }).catch(err => {
+                // 万が一フルHDに対応していない場合のセーフティ
+                console.log("高解像度モード失敗、通常モードで起動します", err);
+                navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" }, audio: true })
+                    .then(stream => { document.getElementById('preview').srcObject = stream; });
             });
 
         function saveToDB(blob) {
@@ -89,7 +116,7 @@
             };
         }
 
-        // ★修正版：ダブルバッファ方式によるなめらかな合体（エンド判定修正）
+        // ダブルバッファ方式によるなめらかな合体
         document.getElementById('exportBtn').onclick = async () => {
             const status = document.getElementById('status');
             const tx = db.transaction(STORE_NAME, "readonly");
@@ -102,7 +129,6 @@
             const canvas = document.getElementById('hiddenCanvas');
             const ctx = canvas.getContext('2d');
             
-            // 2つの動画プレイヤーを交互に使う
             const player1 = document.createElement('video');
             const player2 = document.createElement('video');
             [player1, player2].forEach(p => { p.muted = true; p.playsInline = true; });
@@ -112,11 +138,19 @@
             const firstUrl = URL.createObjectURL(firstBlob);
             player1.src = firstUrl;
             await new Promise(r => player1.onloadedmetadata = r);
+            
+            // ★改善：合体用のスクリーンの解像度も、読み込んだ高画質動画にぴったり合わせる
             canvas.width = player1.videoWidth;
             canvas.height = player1.videoHeight;
+            URL.revokeObjectURL(firstUrl);
 
             const stream = canvas.captureStream(30);
-            const recorder = new MediaRecorder(stream, { mimeType: 'video/webm;codecs=vp9' });
+            
+            // 合体後の動画のビットレートも高画質用に調整
+            const recorder = new MediaRecorder(stream, { 
+                mimeType: 'video/webm;codecs=vp9',
+                videoBitsPerSecond: 6000000 // 6Mbps
+            });
             const finalChunks = [];
             recorder.ondataavailable = e => finalChunks.push(e.data);
             recorder.start();
@@ -125,9 +159,8 @@
             let nextPlayer = player2;
 
             for (let i = 0; i < keys.length; i++) {
-                status.innerText = `なめらかに結合中... (${i + 1} / ${keys.length})`;
+                status.innerText = `高画質で結合中... (${i + 1} / ${keys.length})`;
                 
-                // 次の動画がある場合は、現在の再生中に裏でプリロード（先読み）
                 if (i + 1 < keys.length) {
                     try {
                         const nextBlob = await getBlobByKey(keys[i + 1]);
@@ -138,11 +171,10 @@
                     }
                 }
 
-                // 現在のプレイヤーを再生し、Canvasに描画
                 try {
                     await activePlayer.play();
                     await new Promise((resolve, reject) => {
-                        const timeout = setTimeout(() => reject(new Error("Timeout")), 2500); // 1秒動画なので2.5秒でタイムアウト
+                        const timeout = setTimeout(() => reject(new Error("Timeout")), (RECORD_SECONDS + 2) * 1000);
                         
                         const draw = () => {
                             ctx.drawImage(activePlayer, 0, 0, canvas.width, canvas.height);
@@ -159,20 +191,17 @@
                     console.log(`${i + 1}個目の動画に問題があったためスキップします`);
                 }
 
-                // メモリ解放処理
                 if (activePlayer.src) {
                     URL.revokeObjectURL(activePlayer.src);
                     activePlayer.src = "";
                     activePlayer.load();
                 }
                 
-                // プレイヤーを交代
                 let temp = activePlayer;
                 activePlayer = nextPlayer;
                 nextPlayer = temp;
             }
 
-            // ループを抜けた後、最後の描画が完全に終わるのを一瞬待ってから録画を止める
             setTimeout(() => {
                 recorder.stop();
             }, 100);
@@ -181,9 +210,9 @@
                 const finalBlob = new Blob(finalChunks, { type: 'video/webm' });
                 const a = document.createElement('a');
                 a.href = URL.createObjectURL(finalBlob);
-                a.download = `seamless_vlog_${Date.now()}.webm`;
+                a.download = `high_quality_vlog_${Date.now()}.webm`;
                 a.click();
-                status.innerText = "完成！1本の動画として保存しました";
+                status.innerText = "完成！高画質動画として保存しました";
             };
         };
 
